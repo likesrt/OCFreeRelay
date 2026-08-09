@@ -1,7 +1,15 @@
+# OCFreeRelay 网关 — 直接使用 CNB 制品库构建好的多架构镜像
+#
+# 镜像由 CNB CI 流水线构建并推送到 docker.cnb.cool 制品库（见 .ci/.docker-build.yml）。
+# 本地无需再打包：compose 直接拉取镜像运行。
+#
+# 用法：
+#   docker compose up -d                              # 默认 latest
+#   TAG=v0.1.0 docker compose up -d                   # 指定版本 tag
+
 services:
   oc-free-relay:
-    build: .
-    image: oc-free-relay:latest
+    image: docker.cnb.cool/ansssde/tools/ocfreerelay:${TAG:-latest}
     container_name: oc-free-relay
     restart: unless-stopped
     ports:
