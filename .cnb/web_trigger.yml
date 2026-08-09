@@ -4,7 +4,7 @@ branch:
         event: web_trigger_build_image
         description: 构建 amd64 + arm64 双架构 Docker 镜像并推送到 CNB 制品库
         permissions:
-          roles: [master, developer]
+          roles: [owner, master, developer]
         inputs:
           image_tag:
             name: 镜像标签
