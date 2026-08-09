@@ -40,8 +40,10 @@
 
 ## 分支映射
 
-# 兜底分支：仅挂载 web_trigger 手动触发（任何分支页面按钮都能触发）
+# 兜底分支：仅挂载手动/API 触发（任何分支页面按钮都能触发）
 # 注意：事件下必须是「流水线数组」，直接挂 `*docker-buildx`（对象）不会创建 Pipeline
 $:
   web_trigger_build_image:
+    - *docker-buildx
+  api_trigger_build_image:
     - *docker-buildx
