@@ -1,49 +1,98 @@
 ## 可复用片段（以 . 开头，不作为分支名识别）
+#
+# 多架构镜像构建：不用 QEMU/buildx（CNB runner 无特权，buildx 会挂 /sys 失败）。
+# 改为按架构各起一条流水线（runner.tags 指定装架构节点），各自 docker build + push
+# 带 -linux-<arch> 后缀的单架构镜像，最后由 cnbcool/manifest 插件合并成多架构 manifest。
 
-# 双架构 Docker 构建（buildx + QEMU）
-.docker-buildx: &docker-buildx
-  name: 构建并推送双架构镜像
+# 单架构构建（实例通过 runner.tags 选节点、env.BUILD_ARCH 传入架构）
+.docker-build-arch: &docker-build-arch
   services:
     - docker
-  docker:
-    image: node:20-alpine
-  env:
-    PLATFORMS: linux/amd64,linux/arm64
   stages:
-    - name: 注册 QEMU binfmt
-      script: docker run --privileged --rm tonistiigi/binfmt --install all
-    - name: 创建 buildx builder
-      script: |
-        docker buildx create --use --name ocfreerelay-builder \
-          || docker buildx use ocfreerelay-builder
-        docker buildx inspect --bootstrap
     - name: 登录制品库
       script: docker login "$CNB_DOCKER_REGISTRY" -u "$CNB_TOKEN_USER_NAME" -p "$CNB_TOKEN"
-    - name: 构建并推送双架构镜像
+    - name: 构建并推送 $BUILD_ARCH 镜像
       script: |
-        IMAGE="$CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE"
-        # web_trigger 传入的镜像标签（变量名即输入键名）
         TAG="${image_tag:-$CNB_COMMIT_SHORT}"
-        docker buildx build \
-          --platform "$PLATFORMS" \
-          -t "$IMAGE:$TAG" \
-          -t "$IMAGE:latest" \
-          --push \
-          .
-        echo "✓ 已推送 $IMAGE:$TAG 和 $IMAGE:latest（双架构 $PLATFORMS）"
+        IMAGE_NAME="$CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE"
+        docker build -t "$IMAGE_NAME:$TAG-linux-$BUILD_ARCH" .
+        docker push "$IMAGE_NAME:$TAG-linux-$BUILD_ARCH"
+    - name: 通知 $BUILD_ARCH 完成
+      type: cnb:resolve
+      options:
+        key: build-ocfreerelay-$BUILD_ARCH
   failStages:
     - name: 构建失败通知
       image: tencentcom/wecom-message
       settings:
         msgType: markdown
-        content: "❌ OCFreeRelay 镜像构建失败: $CNB_BUILD_ID"
+        content: "❌ OCFreeRelay $BUILD_ARCH 镜像构建失败: $CNB_BUILD_ID"
+
+# 合并多架构 manifest（等待两个架构构建完成）
+.docker-manifest: &docker-manifest
+  name: 合并并推送多架构镜像
+  services:
+    - docker
+  stages:
+    - name: 校验镜像标签
+      script: |
+        if [ -z "${image_tag:-}" ]; then
+          echo "缺少镜像标签 image_tag，请在 web 按钮或 API 触发时传入" >&2
+          exit 1
+        fi
+    - name: 等待 amd64 构建
+      type: cnb:await
+      options:
+        key: build-ocfreerelay-amd64
+    - name: 等待 arm64 构建
+      type: cnb:await
+      options:
+        key: build-ocfreerelay-arm64
+    - name: 合并并推送多架构镜像
+      image: cnbcool/manifest
+      settings:
+        target: $CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE:$image_tag,$CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE:latest
+        template: $CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE:$image_tag-OS-ARCH
+        platforms:
+          - linux/amd64
+          - linux/arm64
+  failStages:
+    - name: 构建失败通知
+      image: tencentcom/wecom-message
+      settings:
+        msgType: markdown
+        content: "❌ OCFreeRelay 多架构镜像合并失败: $CNB_BUILD_ID"
 
 ## 分支映射
 
 # 兜底分支：仅挂载手动/API 触发（任何分支页面按钮都能触发）
-# 注意：事件下必须是「流水线数组」，直接挂 `*docker-buildx`（对象）不会创建 Pipeline
+# 注意：事件下必须是「流水线数组」，直接挂对象不会创建 Pipeline
 $:
   web_trigger_build_image:
-    - *docker-buildx
+    - name: 构建并推送 amd64 镜像
+      <<: *docker-build-arch
+      runner:
+        tags: cnb:arch:amd64
+      env:
+        BUILD_ARCH: amd64
+    - name: 构建并推送 arm64 镜像
+      <<: *docker-build-arch
+      runner:
+        tags: cnb:arch:arm64:v8
+      env:
+        BUILD_ARCH: arm64
+    - *docker-manifest
   api_trigger_build_image:
-    - *docker-buildx
+    - name: 构建并推送 amd64 镜像
+      <<: *docker-build-arch
+      runner:
+        tags: cnb:arch:amd64
+      env:
+        BUILD_ARCH: amd64
+    - name: 构建并推送 arm64 镜像
+      <<: *docker-build-arch
+      runner:
+        tags: cnb:arch:arm64:v8
+      env:
+        BUILD_ARCH: arm64
+    - *docker-manifest
