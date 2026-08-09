@@ -30,16 +30,20 @@ export type ClashHints = {
 
 export type ClashParseResult = {
   proxies: PoolProxy[];
-  /** Direct http/socks usable without bridge. */
+  /** Direct http/socks5 usable without bridge. */
   usableCount: number;
   /** Protocol nodes that need Clash bridge (or are disabled). */
   skippedCount: number;
   /** Nodes that can work via Clash bridge (vless/hy2/…). */
   bridgeableCount: number;
-  format: "clash-yaml" | "uri-list" | "empty";
+  format: "clash-yaml" | "uri-list" | "json-proxies" | "empty";
   clashHints?: ClashHints;
   /** Which User-Agent produced the body (fetch only). */
   usedUserAgent?: string;
+  /** JSON proxy-source API (proxy.scdn.io style) detected. */
+  sendAsJson?: boolean;
+  /** Body was fetched as plain text for debugging (saveBase64). */
+  saveBase64?: boolean;
 };
 
 const TUNNEL_PROTOS = [
@@ -259,6 +263,33 @@ export function parseProxyUri(line: string, subscriptionId?: string): PoolProxy 
   const raw = line.trim();
   if (!raw || raw.startsWith("#")) return null;
 
+  // JSON proxy-source APIs return bare `host:port` entries (proxy.scdn.io).
+  // The HTTP server normally injects `type` from the /fetch `protocol` query
+  // param, but when the caller already serialized entries we can't know the
+  // protocol — SOCKS5 is the safest default and matches what these APIs emit.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    const hostPort = raw.match(/^([^:\s]+)(?::([0-9]{1,5}))$/);
+    if (hostPort && hostPort[1]) {
+      const host = hostPort[1];
+      const port = hostPort[2] ? Number(hostPort[2]) : 0;
+      if (host && port > 0) {
+        return {
+          id: newProxyId("uri"),
+          name: `${host}:${port}`,
+          type: "socks5",
+          host,
+          port,
+          enabled: true,
+          source: subscriptionId ? "subscription" : "manual",
+          subscriptionId,
+          usable: true,
+          bridgeable: true,
+          clashNodeName: `${host}:${port}`,
+        };
+      }
+    }
+  }
+
   let urlStr = raw;
   if (urlStr.startsWith("socks://")) {
     urlStr = "socks5://" + urlStr.slice("socks://".length);
@@ -451,6 +482,25 @@ export function parseSubscriptionBody(
     if (decoded) text = decoded.trim();
   }
 
+  // JSON API proxy sources (e.g. proxy.scdn.io /get_proxy.php):
+  // {"code":200,"data":{"proxies":["host:port", ...]}} — possibly nested.
+  // This branch must run BEFORE the Clash YAML / URI list tests above, because
+  // some API bodies begin with `port: 123` or otherwise look like YAML.
+  const jsonProxies: PoolProxy[] = [];
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const found = collectJsonProxyStrings(parsed);
+    for (const raw of found) {
+      const p = parseProxyUri(raw, subscriptionId);
+      if (p) jsonProxies.push(p);
+    }
+  } catch {
+    /* ignore non-JSON bodies */
+  }
+  if (jsonProxies.length) {
+    return finalizeProxies(jsonProxies, "json-proxies");
+  }
+
   // Clash YAML
   if (
     text.includes("proxies:") ||
@@ -488,8 +538,11 @@ export function parseSubscriptionBody(
       if (p) proxies.push(p);
     }
   }
+  if (proxies.length) {
+    return finalizeProxies(proxies, "uri-list");
+  }
 
-  return finalizeProxies(proxies, "uri-list");
+  return finalizeProxies([], "empty");
 }
 
 export type FetchSubscriptionOptions = {
@@ -507,7 +560,7 @@ async function fetchBody(
   url: string,
   userAgent: string,
   timeoutMs: number
-): Promise<{ text: string; bytes: number; status: number }> {
+): Promise<{ text: string; bytes: number; status: number; contentType?: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -530,10 +583,78 @@ async function fetchBody(
       // treat as pure base64 binary-ish
       text = buf.toString("utf8");
     }
-    return { text, bytes: buf.length, status: res.status };
+    return {
+      text,
+      bytes: buf.length,
+      status: res.status,
+      contentType: res.headers.get("content-type") || undefined,
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Recursively collect `host:port` strings from a JSON proxy-source response.
+ * Accepts common shapes:
+ *   { data: { proxies: [...] } } | { proxies: [...] } | { data: [...] }
+ *   { result: [...] } | { data: { list: [...] } } | a bare array
+ * Any object/array key whose value looks like host:port is picked up.
+ * Returns distinct, trimmed strings (empty array when nothing matches).
+ */
+export function collectJsonProxyStrings(json: unknown): string[] {
+  const out = new Set<string>();
+  const MAX = 4096;
+
+  const add = (s: string): void => {
+    if (out.size >= MAX) return;
+    out.add(s);
+  };
+
+  const walk = (value: unknown): void => {
+    if (out.size >= MAX) return;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (out.size >= MAX) return;
+        if (typeof item === "string") {
+          const t = item.trim();
+          if (t) add(t);
+        } else {
+          walk(item);
+        }
+      }
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const v of Object.values(value as Record<string, unknown>)) {
+        if (out.size >= MAX) return;
+        walk(v);
+      }
+    }
+  };
+
+  const hostPortRe = /^[A-Za-z0-9.\-]+(?::[0-9]{1,5})$/;
+  const want = (value: unknown): boolean => {
+    // Only recurse into values that can plausibly hold host:port lists.
+    if (Array.isArray(value)) return true;
+    if (value && typeof value === "object") return true;
+    return typeof value === "string" && hostPortRe.test(value.trim());
+  };
+
+  if (json !== null && typeof json === "object" && !Array.isArray(json)) {
+    const rec = json as Record<string, unknown>;
+    // Prefer well-known proxy keys first.
+    for (const key of Object.keys(rec)) {
+      if (/proxies?|nodes?|list|items|result|hosts|servers?|rows|data|addrs?/i.test(key)) {
+        if (want(rec[key])) walk(rec[key]);
+      }
+      if (out.size >= MAX) return [...out];
+    }
+  }
+  // Fallback: sweep the whole tree (handles bare arrays, {0:[...]}, exotic schemas).
+  if (!out.size) walk(json);
+
+  return [...out];
 }
 
 /**
@@ -558,12 +679,15 @@ export async function fetchClashSubscription(
 
   for (const ua of agents) {
     try {
-      const { text, bytes } = await fetchBody(fetchImpl, opts.url, ua, timeoutMs);
+      const { text, bytes, contentType } = await fetchBody(fetchImpl, opts.url, ua, timeoutMs);
       const parsed = parseSubscriptionBody(text, opts.subscriptionId);
       const candidate = {
         ...parsed,
         rawBytes: bytes,
         usedUserAgent: ua,
+        // JSON proxy APIs (proxy.scdn.io) only parse with our own UA — note it.
+        sendAsJson: parsed.format === "json-proxies",
+        saveBase64: !!contentType && /json|text|html/i.test(contentType) && !text.includes("proxies:") && !text.includes("://"),
       };
       if (!best || scoreParsed(candidate) > scoreParsed(best)) {
         best = candidate;

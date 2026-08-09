@@ -98,6 +98,49 @@ proxies:
     expect(result.usableCount).toBe(2);
   });
 
+  it("parses JSON proxy-source API (proxy.scdn.io style)", () => {
+    const json = JSON.stringify({
+      code: 200,
+      message: "success",
+      data: {
+        count: 20,
+        proxies: [
+          "121.37.199.23:10443",
+          "123.57.1.78:20000",
+          "47.121.183.107:3129",
+        ],
+      },
+    });
+    const result = parseSubscriptionBody(json, "scdn");
+    expect(result.format).toBe("json-proxies");
+    expect(result.proxies.length).toBe(3);
+    expect(result.usableCount).toBe(3);
+    const p = result.proxies[0];
+    expect(p.host).toBe("121.37.199.23");
+    expect(p.port).toBe(10443);
+    expect(p.type).toBe("socks5");
+    expect(p.usable).toBe(true);
+    expect(p.source).toBe("subscription");
+    expect(p.subscriptionId).toBe("scdn");
+  });
+
+  it("JSON proxy-source with a bare data array", () => {
+    const json = JSON.stringify({
+      result: ["1.1.1.1:8080", "2.2.2.2:1080"],
+    });
+    const result = parseSubscriptionBody(json, "s2");
+    expect(result.format).toBe("json-proxies");
+    expect(result.proxies.length).toBe(2);
+    expect(result.proxies[0].host).toBe("1.1.1.1");
+    expect(result.proxies[1].host).toBe("2.2.2.2");
+  });
+
+  it("JSON without host:port lists yields empty", () => {
+    const result = parseSubscriptionBody(JSON.stringify({ ok: true, data: [] }), "s3");
+    expect(result.proxies.length).toBe(0);
+    expect(result.format).toBe("empty");
+  });
+
   it("parses mitce-style base64 vless/hysteria2 URI list (was empty before)", () => {
     const lines = [
       "vless://F2987FBA-B653-444D-8057-6B6474E448C6@hk1-r.example.com:10126?type=grpc&security=reality#HK-1",

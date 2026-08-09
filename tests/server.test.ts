@@ -287,6 +287,7 @@ describe("gateway HTTP entry", () => {
   });
 
   it("serves only free models: filters list and rejects paid chat", async () => {
+    const freeModels = new FreeModelRegistry();
     const { port, dir } = await bootMocked(async (url, init) => {
       if (String(url).endsWith("/models")) {
         return new Response(
@@ -319,7 +320,7 @@ describe("gateway HTTP entry", () => {
         );
       }
       return new Response("nope", { status: 404 });
-    });
+    }, freeModels);
 
     try {
       // /v1/models exposes only the free model
@@ -359,9 +360,11 @@ describe("gateway HTTP entry", () => {
       // admin free-models endpoint reflects the registry
       const fm = (await (
         await fetch(`http://127.0.0.1:${port}/admin/api/free-models`)
-      ).json()) as { count: number; usingBaseline: boolean };
+      ).json()) as { count: number; usingBaseline: boolean; ids: string[] };
       expect(fm.count).toBeGreaterThan(0);
       expect(fm.usingBaseline).toBe(true);
+      // baseline keeps big-pickle so /v1/models could filter it down
+      expect(fm.ids).toContain("big-pickle");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

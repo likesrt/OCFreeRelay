@@ -1,0 +1,14 @@
+branch:
+  - buttons:
+      - name: 构建并推送镜像
+        event: web_trigger_build_image
+        description: 构建 amd64 + arm64 双架构 Docker 镜像并推送到 CNB 制品库
+        permissions:
+          roles: [master, developer]
+        inputs:
+          image_tag:
+            name: 镜像标签
+            type: input
+            required: true
+            default: latest
+            description: 推送的镜像 tag，留空则用 commit 短 SHA

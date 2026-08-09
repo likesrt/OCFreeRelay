@@ -1,0 +1,45 @@
+## 可复用片段（以 . 开头，不作为分支名识别）
+
+# 双架构 Docker 构建（buildx + QEMU）
+.docker-buildx: &docker-buildx
+  name: 构建并推送双架构镜像
+  services:
+    - docker
+  docker:
+    image: node:20-alpine
+  env:
+    PLATFORMS: linux/amd64,linux/arm64
+  stages:
+    - name: 注册 QEMU binfmt
+      script: docker run --privileged --rm tonistiigi/binfmt --install all
+    - name: 创建 buildx builder
+      script: |
+        docker buildx create --use --name ocfreerelay-builder \
+          || docker buildx use ocfreerelay-builder
+        docker buildx inspect --bootstrap
+    - name: 登录制品库
+      script: docker login "$CNB_DOCKER_REGISTRY" -u "$CNB_TOKEN_USER_NAME" -p "$CNB_TOKEN"
+    - name: 构建并推送双架构镜像
+      script: |
+        IMAGE="$CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE"
+        # web_trigger 传入的镜像标签（变量名即输入键名）
+        TAG="${image_tag:-$CNB_COMMIT_SHORT}"
+        docker buildx build \
+          --platform "$PLATFORMS" \
+          -t "$IMAGE:$TAG" \
+          -t "$IMAGE:latest" \
+          --push \
+          .
+        echo "✓ 已推送 $IMAGE:$TAG 和 $IMAGE:latest（双架构 $PLATFORMS）"
+  failStages:
+    - name: 构建失败通知
+      image: tencentcom/wecom-message
+      settings:
+        msgType: markdown
+        content: "❌ OCFreeRelay 镜像构建失败: $CNB_BUILD_ID"
+
+## 分支映射
+
+# 兜底分支：仅挂载 web_trigger 手动触发（任何分支页面按钮都能触发）
+$:
+  web_trigger_build_image: *docker-buildx

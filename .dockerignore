@@ -1,0 +1,15 @@
+# .dockerignore — keep build context small and secrets out of the image
+node_modules
+dist
+data
+*.log
+.DS_Store
+.git
+Dockerfile
+docker-compose.yml
+.dockerignore
+.env
+.env.local
+README.md
+tests
+scripts

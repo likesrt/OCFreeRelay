@@ -626,11 +626,24 @@ async function handleRequest(
     }
 
     try {
-      const result = await fetchClashSubscription({
+      const { protocol, ...rest } = Object.fromEntries(url.searchParams);
+      // JSON proxy-source APIs (proxy.scdn.io) encode the protocol as a query
+      // param that their bare host:port entries would otherwise lose.
+      let result = await fetchClashSubscription({
         url: sub.url,
         subscriptionId: sub.id,
         fetchImpl: subscriptionFetch,
       });
+      if (protocol && result.proxies.length && result.format === "json-proxies") {
+        result = {
+          ...result,
+          proxies: result.proxies.map((p) =>
+            p.type === "socks5" // bare entries default to socks5 in parseProxyUri
+              ? { ...p, type: protocol }
+              : p
+          ),
+        };
+      }
       const mergedPool = mergeSubscriptionProxies(s.proxyPool, sub.id, result.proxies);
       const updatedSub: ProxySubscription = {
         ...sub,
@@ -669,6 +682,8 @@ async function handleRequest(
         totalCount: result.proxies.length,
         rawBytes: result.rawBytes,
         usedUserAgent: result.usedUserAgent,
+        saveBase64: result.saveBase64 ?? false,
+        sendAsJson: result.sendAsJson ?? false,
         clashHints: result.clashHints,
         hint:
           result.usableCount === 0 && result.bridgeableCount > 0

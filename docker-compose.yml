@@ -1,0 +1,24 @@
+services:
+  oc-free-relay:
+    build: .
+    image: oc-free-relay:latest
+    container_name: oc-free-relay
+    restart: unless-stopped
+    ports:
+      # Host port (left) → container port (right)
+      - "9876:9876"
+    volumes:
+      # Persist settings / worker stats / free-model cache across restarts
+      - ./data:/data
+    environment:
+      - PORT=9876
+      - OCFREERELAY_SETTINGS_PATH=/data/settings.json
+      - OCFREERELAY_STATS_PATH=/data/worker-stats.json
+      # Optional — uncomment to synthesize OpenCode CLI identity headers
+      # - OPENCODE_SYNTHESIZE_CLI_HEADERS=true
+      # - OPENCODE_USER_AGENT=opencode-cli/1.0.0
+      # - OPENCODE_CLIENT=cli
+      # - OPENCODE_PROJECT=default
+      # Optional — override the Zen pricing page used to scrape free models
+      # - OCFREERELAY_PRICING_URL=https://opencode.ai/docs/zen
+    # web UI served on 9876; the same port also serves /v1 OpenAI-compatible API
