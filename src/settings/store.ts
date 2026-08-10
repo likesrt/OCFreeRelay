@@ -11,6 +11,7 @@ import {
   normalizePoolProxy,
   normalizeProxyPool,
   normalizeSubscriptions,
+  parseProxyUriLine,
   type ClashBridgeConfig,
   type PoolProxy,
   type ProxySubscription,
@@ -238,6 +239,54 @@ export class SettingsStore {
     return this.get();
   }
 
+  /**
+   * Import many manually-written proxy lines (one per line).
+   * Newly parsed entries are appended (deduped against the existing pool);
+   * already-present entries are skipped. Returns counts and per-line errors.
+   */
+  async importProxyLines(text: string): Promise<{
+    settings: GatewaySettings;
+    imported: number;
+    skipped: number;
+    errors: Array<{ line: string; error: string }>;
+  }> {
+    const errors: Array<{ line: string; error: string }> = [];
+    const existingKeys = new Set(
+      this.settings.proxyPool.map((p) =>
+        `${p.type}://${p.username ?? ""}:${p.password ?? ""}@${p.host}:${p.port}`.toLowerCase()
+      )
+    );
+    const additions: PoolProxy[] = [];
+    let skipped = 0;
+    for (const rawLine of (text || "").split(/\r?\n/)) {
+      const trimmed = rawLine.trim();
+      if (!trimmed || /^#/.test(trimmed)) continue;
+      const parsed = parseProxyUriLine(trimmed);
+      if (!parsed) {
+        errors.push({ line: trimmed, error: "无法解析 — 支持 http(s)/socks 一行一个" });
+        continue;
+      }
+      const key = `${parsed.type}://${parsed.username ?? ""}:${parsed.password ?? ""}@${parsed.host}:${parsed.port}`.toLowerCase();
+      if (existingKeys.has(key)) {
+        skipped += 1;
+        continue;
+      }
+      existingKeys.add(key);
+      additions.push(parsed);
+    }
+    if (additions.length) {
+      this.settings.proxyPool = [...this.settings.proxyPool, ...additions];
+      await this.persist();
+      this.syncStatusFromSettings();
+    }
+    return {
+      settings: this.get(),
+      imported: additions.length,
+      skipped,
+      errors,
+    };
+  }
+
   async removeProxy(id: string): Promise<GatewaySettings> {
     this.settings.proxyPool = this.settings.proxyPool.filter((p) => p.id !== id);
     this.settings.accounts = this.settings.accounts.map((a) =>
@@ -249,8 +298,15 @@ export class SettingsStore {
   }
 
   private async persist(): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(this.path, JSON.stringify(this.settings, null, 2), "utf8");
+    try {
+      await mkdir(dirname(this.path), { recursive: true });
+      await writeFile(this.path, JSON.stringify(this.settings, null, 2), "utf8");
+    } catch (err) {
+      // 写设置失败（如容器 /data 无写权限）不应中断请求；内存中的设置为准。
+      console.warn(
+        `[settings] persist failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   private syncStatusFromSettings(): void {

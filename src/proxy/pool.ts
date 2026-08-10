@@ -308,6 +308,72 @@ export function resolveAccountProxy(
 }
 
 /**
+ * Parse a single URI-style proxy line like `http://user:pass@host:port`,
+ * `socks5://host:port`, `host:port`, with an optional `#name`.
+ * Returns null for unsupported / malformed lines.
+ */
+export function parseProxyUriLine(line: string): PoolProxy | null {
+  const raw = (line || "").trim();
+  if (!raw) return null;
+  const idx = raw.lastIndexOf("#");
+  const name = idx >= 0 ? decodeURIComponent(raw.slice(idx + 1).trim()).replace(/\+/g, " ") : undefined;
+  const body = idx >= 0 ? raw.slice(0, idx).trim() : raw;
+
+  // Allow bare `host:port` (defaults to http).
+  const protoMatch = body.match(/^([a-zA-Z0-9+.-]+):\/\//);
+  if (!protoMatch) {
+    const lastColon = body.lastIndexOf(":");
+    if (lastColon <= 0) return null;
+    const host = body.slice(0, lastColon);
+    const port = Number(body.slice(lastColon + 1));
+    if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) return null;
+    return normalizePoolProxy({ host, port, type: "http", name }) ?? null;
+  }
+
+  const proto = normalizeProtocol(protoMatch[1]);
+  const direct = ["http", "https", "socks5", "socks4"].includes(proto);
+  if (!direct) return null; // vless/hy2/ss/… need Clash — not handled by line import
+
+  try {
+    const u = new URL(body);
+    const host = u.hostname;
+    const port = u.port ? Number(u.port) : u.protocol.startsWith("https") ? 443 : 80;
+    if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) return null;
+    return normalizePoolProxy({
+      type: proto,
+      host,
+      port,
+      name,
+      username: u.username ? decodeURIComponent(u.username) : undefined,
+      password: u.password ? decodeURIComponent(u.password) : undefined,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a text blob with one proxy per line, skipping blank lines and
+ * duplicates within the input.
+ */
+export function parseProxyLines(text: string): PoolProxy[] {
+  const seen = new Set<string>();
+  const out: PoolProxy[] = [];
+  for (const line of (text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^#/.test(trimmed)) continue; // comment line
+    const p = parseProxyUriLine(trimmed);
+    if (!p) continue;
+    const key = `${p.type}://${p.username ?? ""}:${p.password ?? ""}@${p.host}:${p.port}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+/**
  * Merge subscription-imported proxies into the pool:
  * - remove previous entries from the same subscriptionId
  * - keep all manual entries and other subscriptions

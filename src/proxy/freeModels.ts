@@ -152,16 +152,21 @@ export class FreeModelRegistry {
   }
 
   private async persist(): Promise<void> {
-    await mkdir(dirname(this.cachePath), { recursive: true });
-    await writeFile(
-      this.cachePath,
-      JSON.stringify(
-        { fetchedAt: this.lastFetchedAt, ids: this.ids() },
-        null,
-        2
-      ),
-      "utf8"
-    );
+    try {
+      await mkdir(dirname(this.cachePath), { recursive: true });
+      await writeFile(
+        this.cachePath,
+        JSON.stringify(
+          { fetchedAt: this.lastFetchedAt, ids: this.ids() },
+          null,
+          2
+        ),
+        "utf8"
+      );
+    } catch (err) {
+      // 写缓存失败（如容器 /data 无写权限）不应影响内存中的免费模型集合。
+      this.lastError = `cache write failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   /**
@@ -182,7 +187,7 @@ export class FreeModelRegistry {
       this._ids = new Set(parsed);
       this.lastFetchedAt = new Date().toISOString();
       this.lastError = null;
-      await this.persist();
+      await this.persist(); // 写缓存失败仅记录 lastError，不中断本次成功抓取
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       // keep previous set

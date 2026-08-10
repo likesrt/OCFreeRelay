@@ -252,8 +252,15 @@ export class WorkerStatsStore {
       const { accountId: _a, cacheRate: _r, ...rest } = s;
       workers[id] = rest;
     }
-    await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(this.path, JSON.stringify({ workers }, null, 2), "utf8");
+    try {
+      await mkdir(dirname(this.path), { recursive: true });
+      await writeFile(this.path, JSON.stringify({ workers }, null, 2), "utf8");
+    } catch (err) {
+      // 写统计失败（如容器 /data 无写权限）不应中断请求；统计以内存为准。
+      console.warn(
+        `[worker-stats] persist failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   private ensure(id: string): WorkerStatSnapshot {

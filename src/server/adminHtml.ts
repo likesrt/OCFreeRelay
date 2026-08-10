@@ -762,6 +762,10 @@ export const ADMIN_HTML = `<!DOCTYPE html>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
                 <span data-i18n="addProxy">Add Proxy</span>
               </button>
+              <button type="button" class="btn" id="btn-import-open">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+                <span data-i18n="importProxies">Import</span>
+              </button>
               <button type="button" class="btn" id="btn-add-sub-open">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
                 <span data-i18n="addSubscription">Add Subscription</span>
@@ -1070,6 +1074,24 @@ export const ADMIN_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="modal-root" id="modal-import">
+    <div class="modal form">
+      <h3 data-i18n="importProxies">Import Proxies</h3>
+      <p class="hint" data-i18n="importHint">One proxy per line · http(s) / socks4 / socks5 · optional #name</p>
+      <div class="row">
+        <div>
+          <label class="field" for="importText" data-i18n="importLines">Proxy lines</label>
+          <textarea class="textarea" id="importText" rows="10" spellcheck="false"
+            placeholder="http://user:pass@1.2.3.4:3129&#10;socks5://1.2.3.4:1080 #my-node&#10;1.9.8.7:8080"></textarea>
+        </div>
+      </div>
+      <div class="acts">
+        <button type="button" class="btn" id="modal-import-cancel" data-i18n="cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btn-import" data-i18n="importToPool">Import</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const $ = (id) => document.getElementById(id);
     const VERSION = "1.0.0";
@@ -1103,6 +1125,11 @@ export const ADMIN_HTML = `<!DOCTYPE html>
         usageSub: "Point any OpenAI-compatible client at this gateway.",
         addProxy: "Add Proxy", addSubscription: "Add Subscription", pullAll: "Pull All",
         more: "More", refreshAll: "Refresh all", reviewBindings: "Review Bindings",
+        importProxies: "Import", importHint: "One proxy per line · http(s) / socks4 / socks5 · optional #name",
+        importLines: "Proxy lines", importToPool: "Import",
+        toastImportedN: (n, skip) => "Imported " + n + " · skipped " + skip,
+        toastImportFail: "Import failed",
+        toastImportEmpty: "No lines imported",
         saveChanges: "Save Changes", testConnection: "Test Connection",
         upstreamBaseUrl: "Upstream base URL",
         listenPort: "Listen port (restart to apply)",
@@ -1221,6 +1248,11 @@ export const ADMIN_HTML = `<!DOCTYPE html>
         usageSub: "将任意 OpenAI 兼容客户端指向本网关。",
         addProxy: "添加代理", addSubscription: "添加订阅", pullAll: "拉取全部",
         more: "更多", refreshAll: "全部刷新", reviewBindings: "检查绑定",
+        importProxies: "导入", importHint: "每行一个代理 · http(s) / socks4 / socks5 · 可选 #名称",
+        importLines: "代理列表", importToPool: "导入",
+        toastImportedN: (n, skip) => "已导入 " + n + " · 跳过 " + skip,
+        toastImportFail: "导入失败",
+        toastImportEmpty: "未导入任何代理",
         saveChanges: "保存更改", testConnection: "测试连接",
         upstreamBaseUrl: "上游 Base URL",
         listenPort: "监听端口（需重启生效）",
@@ -2042,10 +2074,36 @@ export const ADMIN_HTML = `<!DOCTYPE html>
     function closeModal(id) { $(id).classList.remove("show"); }
     $("btn-add-proxy-open").onclick = () => openModal("modal-proxy");
     $("btn-add-sub-open").onclick = () => openModal("modal-sub");
+    $("btn-import-open").onclick = () => openModal("modal-import");
     $("modal-proxy-cancel").onclick = () => closeModal("modal-proxy");
     $("modal-sub-cancel").onclick = () => closeModal("modal-sub");
+    $("modal-import-cancel").onclick = () => closeModal("modal-import");
     $("modal-proxy").addEventListener("click", (e) => { if (e.target.id === "modal-proxy") closeModal("modal-proxy"); });
     $("modal-sub").addEventListener("click", (e) => { if (e.target.id === "modal-sub") closeModal("modal-sub"); });
+    $("modal-import").addEventListener("click", (e) => { if (e.target.id === "modal-import") closeModal("modal-import"); });
+
+    $("btn-import").onclick = async () => {
+      const text = $("importText").value;
+      if (!text.trim()) { toast(t("toastImportEmpty"), false); return; }
+      const btn = $("btn-import");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/admin/api/proxy-pool/import", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error?.message || t("toastImportFail"), false); return; }
+        settings = data.settings;
+        $("importText").value = "";
+        closeModal("modal-import");
+        renderAll();
+        const msg = t("toastImportedN")(data.imported, data.skipped);
+        toast(msg + (data.errors && data.errors.length ? " · " + data.errors.map((e) => e.line).slice(0, 2).join(", ") + (data.errors.length > 2 ? " …" : "") : ""), data.imported > 0);
+      } catch (e) {
+        toast(String(e.message || e), false);
+      } finally { btn.disabled = false; }
+    };
 
     $("btn-more").onclick = (e) => {
       e.stopPropagation();

@@ -14,9 +14,11 @@ services:
     restart: unless-stopped
     ports:
       # Host port (left) → container port (right)
-      - "9876:9876"
+      # 默认 9876，可用 HOST_PORT 覆盖（如本机该端口被占用时）
+      - "${HOST_PORT:-9876}:9876"
     volumes:
       # Persist settings / worker stats / free-model cache across restarts
+      # 注意：data 目录需允许容器内 node(uid 1000) 写入，见 README 权限说明
       - ./data:/data
     environment:
       - PORT=9876

@@ -11,6 +11,8 @@ import {
   resolveAccountProxy,
   resolveAccountEgress,
   normalizeProxyPool,
+  parseProxyUriLine,
+  parseProxyLines,
   newProxyId,
   type PoolProxy,
 } from "../src/proxy/pool.js";
@@ -447,6 +449,58 @@ describe("UpstreamClient uses bound pool proxy", () => {
   });
 });
 
+describe("parseProxyUriLine / parseProxyLines", () => {
+  it("parses http/https/socks5 with credentials", () => {
+    const p = parseProxyUriLine("http://557lhvsnym38:8dxzl9i3dr5lwq5@104.207.52.17:3129")!;
+    expect(p.type).toBe("http");
+    expect(p.host).toBe("104.207.52.17");
+    expect(p.port).toBe(3129);
+    expect(p.username).toBe("557lhvsnym38");
+    expect(p.password).toBe("8dxzl9i3dr5lwq5");
+    expect(p.usable).toBe(true);
+
+    const s = parseProxyUriLine("socks5://557lhvsnym38:8dxzl9i3dr5lwq5@104.207.41.14:3129")!;
+    expect(s.type).toBe("socks5");
+
+    const h = parseProxyUriLine("https://209.50.182.213:3129")!;
+    expect(h.type).toBe("https");
+    expect(h.username).toBeUndefined();
+  });
+
+  it("parses bare host:port as http and optional #name", () => {
+    const p = parseProxyUriLine("209.50.167.52:3129 #香港")!;
+    expect(p.type).toBe("http");
+    expect(p.host).toBe("209.50.167.52");
+    expect(p.port).toBe(3129);
+    expect(p.name).toContain("香港");
+  });
+
+  it("rejects non-http/socks protocols and garbage", () => {
+    expect(parseProxyUriLine("")).toBeNull();
+    expect(parseProxyUriLine("vless://abc@host:443")).toBeNull();
+    expect(parseProxyUriLine("ss://abc")).toBeNull();
+    expect(parseProxyUriLine("not a proxy")).toBeNull();
+  });
+
+  it("parses multi-line text, dedupes, skips comments/blanks", () => {
+    const list = parseProxyLines(
+      [
+        "http://u:p@1.1.1.1:3128",
+        "socks5://u:p@1.1.1.1:3128", // same host different proto => kept
+        "http://u:p@1.1.1.1:3128", // dup => dropped
+        "# comment",
+        "",
+        "garbage line",
+        "209.50.167.52:3129 #hk",
+      ].join("\n")
+    );
+    expect(list.length).toBe(3);
+    expect(list.some((p) => p.type === "http" && p.host === "1.1.1.1")).toBe(true);
+    expect(list.some((p) => p.type === "socks5")).toBe(true);
+    expect(list[2].name).toContain("hk");
+  });
+});
+
 describe("admin proxy-pool HTTP APIs", () => {
   let app: App | null = null;
   let dir = "";
@@ -555,6 +609,66 @@ proxies:
     expect(html).toContain("Clash");
     expect(html).toContain("btn-assign-proxies");
     expect(html).toContain("/admin/api/workers/assign-proxies");
+  });
+
+  it("bulk-imports proxy lines and dedupes against existing pool", async () => {
+    dir = await mkdtemp(join(tmpdir(), "ocfr-imp-"));
+    const store = new SettingsStore(join(dir, "settings.json"));
+    await store.save(
+      settings({
+        proxyPool: [
+          {
+            id: "px1",
+            name: "existing",
+            type: "http",
+            host: "10.0.0.1",
+            port: 8080,
+            enabled: true,
+            source: "manual",
+            usable: true,
+            bridgeable: true,
+          },
+        ],
+      })
+    );
+    app = await createApp({ store, port: 0, fetchImpl: async () => new Response("{}", { status: 200 }) });
+    await listen(app);
+    const addr = app.server.address();
+    if (!addr || typeof addr === "string") throw new Error("no addr");
+    const base = `http://127.0.0.1:${addr.port}`;
+
+    const res = await fetch(`${base}/admin/api/proxy-pool/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: [
+          "http://557lhvsnym38:8dxzl9i3dr5lwq5@104.207.52.17:3129 #hk-1",
+          "https://209.50.182.213:3129",
+          "socks5://557lhvsnym38:8dxzl9i3dr5lwq5@104.207.41.14:3129 #hk-2",
+          "209.50.167.52:3129 #hk-3",
+          "http://10.0.0.1:8080", // dup of existing => skipped
+          "http://10.0.0.1:8080", // dup within input => skipped
+          "",
+          "# comment",
+          "garbage line",
+        ].join("\n"),
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      settings: GatewaySettings;
+      imported: number;
+      skipped: number;
+      errors: Array<{ line: string }>;
+    };
+    expect(data.imported).toBe(4);
+    expect(data.skipped).toBe(2);
+    expect(data.errors.length).toBe(1); // the "garbage line"
+    const pool = data.settings.proxyPool;
+    expect(pool.length).toBe(5); // 1 existing + 4 new
+    const imported = pool.filter((p) => p.host !== "10.0.0.1");
+    expect(imported.some((p) => p.type === "socks5" && p.host === "104.207.41.14")).toBe(true);
+    expect(imported.find((p) => p.host === "104.207.52.17")?.username).toBe("557lhvsnym38");
   });
 
   it("returns 400 when no probe-healthy proxies exist", async () => {

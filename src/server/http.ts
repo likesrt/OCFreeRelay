@@ -547,6 +547,39 @@ async function handleRequest(
     return;
   }
 
+  // POST /admin/api/proxy-pool/import — bulk-import one proxy URI per line
+  if (method === "POST" && path === "/admin/api/proxy-pool/import") {
+    const raw = await readBody(req);
+    let body: { text?: unknown };
+    try {
+      body = JSON.parse(raw.toString("utf8") || "{}") as { text?: unknown };
+    } catch {
+      sendJson(res, 400, { error: { message: "Invalid JSON" } });
+      return;
+    }
+    const text = typeof body.text === "string" ? body.text : "";
+    if (!text.trim()) {
+      sendJson(res, 400, { error: { message: "text required" } });
+      return;
+    }
+    const result = await store.importProxyLines(text);
+    const saved = result.settings;
+    if (result.imported) {
+      upstream.updateSettings(saved);
+      store.updateReadyCount(
+        upstream.rotator.readyCount(),
+        upstream.rotator.getAccounts().length
+      );
+    }
+    sendJson(res, 200, {
+      settings: saved,
+      imported: result.imported,
+      skipped: result.skipped,
+      errors: result.errors,
+    });
+    return;
+  }
+
   // POST /admin/api/proxy-subscriptions — add subscription (does not fetch yet)
   if (method === "POST" && path === "/admin/api/proxy-subscriptions") {
     const raw = await readBody(req);
